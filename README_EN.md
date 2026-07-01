@@ -20,12 +20,12 @@ GCP **Spot (preemptible) instances** offer 60-91% discounts over on-demand prici
 
 ```mermaid
 flowchart TD
-    A["⏰ Triggered every 5 min"] --> B["HTTPS probe /\n(timeout 10s)"]
-    B -->|"Got any response\n200 / 404 / 5xx"| C["✅ Online, skip"]
-    B -->|"Connection failed\nTimeout / TLS error"| D["Query GCP instance status\ninstances.get"]
-    D -->|"TERMINATED\nSTOPPED"| E["🔄 Call instances.start"]
-    D -->|"RUNNING / STAGING\nPROVISIONING"| F["⏭️ Skip\nBooting or app-level issue"]
-    E --> G["📨 Send Telegram notification\n(optional)"]
+    A["⏰ Triggered every 5 min"] --> B["HTTPS probe /<br/>(timeout 10s)"]
+    B -->|"Got any response<br/>200 / 404 / 5xx"| C["✅ Online, skip"]
+    B -->|"Connection failed<br/>Timeout / TLS error"| D["Query GCP instance status<br/>instances.get"]
+    D -->|"TERMINATED<br/>STOPPED"| E["🔄 Call instances.start"]
+    D -->|"RUNNING / STAGING<br/>PROVISIONING"| F["⏭️ Skip<br/>Booting or app-level issue"]
+    E --> G["📨 Send Telegram notification<br/>(optional)"]
 
     style C fill:#d4edda,stroke:#28a745
     style E fill:#fff3cd,stroke:#ffc107
@@ -69,8 +69,8 @@ Two **fully independent** options — pick whichever fits your setup:
 
 ```bash
 # 1. Clone the repo (or paste the script content in the Cloud Shell editor)
-git clone https://github.com/your-username/GCP_Start.git
-cd GCP_Start
+git clone https://github.com/your-username/GCP-Spot-Watchdog.git
+cd GCP-Spot-Watchdog
 
 # 2. Edit PROJECT_ID
 nano setup-gcp.sh
@@ -92,8 +92,8 @@ cloudshell download sa-key.json
 # https://cloud.google.com/sdk/docs/install
 gcloud auth login
 
-git clone https://github.com/your-username/GCP_Start.git
-cd GCP_Start
+git clone https://github.com/your-username/GCP-Spot-Watchdog.git
+cd GCP-Spot-Watchdog
 
 # Edit PROJECT_ID at the top of the script
 nano setup-gcp.sh
@@ -306,7 +306,7 @@ curl http://localhost:8787/run
 ## Project Structure
 
 ```
-GCP_Start/
+GCP-Spot-Watchdog/
 ├── README.md                            # Chinese documentation
 ├── README_EN.md                         # This file
 ├── setup-gcp.sh                         # One-time GCP service account setup

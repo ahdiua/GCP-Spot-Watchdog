@@ -69,7 +69,7 @@ Two **fully independent** options — pick whichever fits your setup:
 
 ```bash
 # 1. Clone the repo (or paste the script content in the Cloud Shell editor)
-git clone https://github.com/your-username/GCP-Spot-Watchdog.git
+git clone https://github.com/ahdiua/GCP-Spot-Watchdog.git
 cd GCP-Spot-Watchdog
 
 # 2. Edit PROJECT_ID
@@ -92,7 +92,7 @@ cloudshell download sa-key.json
 # https://cloud.google.com/sdk/docs/install
 gcloud auth login
 
-git clone https://github.com/your-username/GCP-Spot-Watchdog.git
+git clone https://github.com/ahdiua/GCP-Spot-Watchdog.git
 cd GCP-Spot-Watchdog
 
 # Edit PROJECT_ID at the top of the script

@@ -70,7 +70,7 @@ flowchart TD
 ```bash
 # 1. 上传脚本（或直接在 Cloud Shell 编辑器里粘贴内容）
 #    也可以把仓库 clone 下来：
-git clone https://github.com/你的用户名/GCP-Spot-Watchdog.git
+git clone https://github.com/ahdiua/GCP-Spot-Watchdog.git
 cd GCP-Spot-Watchdog
 
 # 2. 编辑 PROJECT_ID
@@ -93,7 +93,7 @@ cloudshell download sa-key.json
 # https://cloud.google.com/sdk/docs/install
 gcloud auth login
 
-git clone https://github.com/你的用户名/GCP-Spot-Watchdog.git
+git clone https://github.com/ahdiua/GCP-Spot-Watchdog.git
 cd GCP-Spot-Watchdog
 
 # 编辑脚本顶部的 PROJECT_ID

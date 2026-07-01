@@ -18,29 +18,18 @@ GCP **Spot（抢占式）实例**价格低至按需的 60-91% 折扣，但随时
 
 ## 工作原理
 
-```
-每 5 分钟
-    │
-    ▼
-┌─────────────────┐     200/404/5xx      ┌──────────┐
-│  HTTPS 探测 /   │ ──── 有响应 ────────▶ │  在线 ✓  │
-│  (超时 10s)     │                       └──────────┘
-└────────┬────────┘
-         │ 连接失败 / 超时 / TLS 失败
-         ▼
-┌─────────────────┐
-│ 查 GCP 实例状态  │
-│ instances.get   │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-TERMINATED  RUNNING/STAGING
- /STOPPED    /PROVISIONING
-    │              │
-    ▼              ▼
- 开机 ▶ TG通知   跳过（正在启动
-instances.start   或应用层故障）
+```mermaid
+flowchart TD
+    A["⏰ 每 5 分钟触发"] --> B["HTTPS 探测 /\n（超时 10s）"]
+    B -->|"收到任意响应\n200 / 404 / 5xx"| C["✅ 在线，跳过"]
+    B -->|"连接失败 / 超时\nTLS 失败"| D["查 GCP 实例状态\ninstances.get"]
+    D -->|"TERMINATED\nSTOPPED"| E["🔄 调用 instances.start 开机"]
+    D -->|"RUNNING / STAGING\nPROVISIONING"| F["⏭️ 跳过\n正在启动或应用层故障"]
+    E --> G["📨 推送 Telegram 通知\n（可选）"]
+
+    style C fill:#d4edda,stroke:#28a745
+    style E fill:#fff3cd,stroke:#ffc107
+    style F fill:#f8d7da,stroke:#dc3545
 ```
 
 **关键设计**：不是"探测失败就开机"——而是以 GCP 实例状态作为**闸门**，只有确认实例确实处于 `TERMINATED`/`STOPPED` 状态才下发 `start`。这避免了对正在启动的实例重复下发指令，也能区分"被抢占关机"和"服务自身挂了但 VM 还在跑"。
@@ -70,16 +59,50 @@ instances.start   或应用层故障）
 
 `setup-gcp.sh` 会创建一个最小权限的服务账号（仅 `compute.instances.get` / `start` / `list`），并下载密钥文件。
 
+> **💡 推荐使用 GCP Cloud Shell**
+>
+> 打开 [GCP 控制台](https://console.cloud.google.com)，点击右上角的 **`>_`** 图标即可启动 Cloud Shell。
+> 它自带 `gcloud` 且已登录你的账号，无需本地安装任何工具。跑完后用 `cloudshell download sa-key.json` 把密钥下载到本地。
+
+<details>
+<summary>在 Cloud Shell 中操作</summary>
+
 ```bash
+# 1. 上传脚本（或直接在 Cloud Shell 编辑器里粘贴内容）
+#    也可以把仓库 clone 下来：
+git clone https://github.com/你的用户名/GCP_Start.git
+cd GCP_Start
+
+# 2. 编辑 PROJECT_ID
+nano setup-gcp.sh
+
+# 3. 运行
+bash setup-gcp.sh
+
+# 4. 下载密钥到本地
+cloudshell download sa-key.json
+```
+
+</details>
+
+<details>
+<summary>在本地终端操作</summary>
+
+```bash
+# 需要先安装 gcloud CLI 并登录：
+# https://cloud.google.com/sdk/docs/install
+gcloud auth login
+
 git clone https://github.com/你的用户名/GCP_Start.git
 cd GCP_Start
 
 # 编辑脚本顶部的 PROJECT_ID
 nano setup-gcp.sh         # 或 vim / code
 
-# 运行（也可在 GCP Cloud Shell 里跑）
 bash setup-gcp.sh
 ```
+
+</details>
 
 运行完成后会生成 `sa-key.json`，并打印服务账号邮箱。**请妥善保管此文件，不要提交到 git。**
 

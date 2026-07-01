@@ -18,29 +18,18 @@ GCP **Spot (preemptible) instances** offer 60-91% discounts over on-demand prici
 
 ## How It Works
 
-```
-Every 5 minutes
-    │
-    ▼
-┌─────────────────┐     200/404/5xx      ┌───────────┐
-│  HTTPS probe /  │ ── got response ───▶ │  Online ✓ │
-│  (timeout 10s)  │                       └───────────┘
-└────────┬────────┘
-         │ Connection refused / timeout / TLS failure
-         ▼
-┌─────────────────┐
-│ Query GCP API   │
-│ instances.get   │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-TERMINATED  RUNNING/STAGING
- /STOPPED    /PROVISIONING
-    │              │
-    ▼              ▼
- Start ▶ TG     Skip (booting
-instances.start  or app-level issue)
+```mermaid
+flowchart TD
+    A["⏰ Triggered every 5 min"] --> B["HTTPS probe /\n(timeout 10s)"]
+    B -->|"Got any response\n200 / 404 / 5xx"| C["✅ Online, skip"]
+    B -->|"Connection failed\nTimeout / TLS error"| D["Query GCP instance status\ninstances.get"]
+    D -->|"TERMINATED\nSTOPPED"| E["🔄 Call instances.start"]
+    D -->|"RUNNING / STAGING\nPROVISIONING"| F["⏭️ Skip\nBooting or app-level issue"]
+    E --> G["📨 Send Telegram notification\n(optional)"]
+
+    style C fill:#d4edda,stroke:#28a745
+    style E fill:#fff3cd,stroke:#ffc107
+    style F fill:#f8d7da,stroke:#dc3545
 ```
 
 **Key design**: we don't blindly restart on probe failure. The GCP instance status acts as a **gate** — `instances.start` is only called when the instance is confirmed `TERMINATED`/`STOPPED`. This prevents duplicate start calls on booting instances and distinguishes "preempted" from "VM is running but the app crashed."
@@ -70,16 +59,49 @@ Two **fully independent** options — pick whichever fits your setup:
 
 `setup-gcp.sh` creates a least-privilege service account (only `compute.instances.get` / `start` / `list`) and downloads the key file.
 
+> **💡 Recommended: use GCP Cloud Shell**
+>
+> Open the [GCP Console](https://console.cloud.google.com) and click the **`>_`** icon in the top-right corner to launch Cloud Shell.
+> It comes with `gcloud` pre-installed and already authenticated — no local setup needed. After running the script, use `cloudshell download sa-key.json` to download the key to your local machine.
+
+<details>
+<summary>Using Cloud Shell</summary>
+
 ```bash
+# 1. Clone the repo (or paste the script content in the Cloud Shell editor)
+git clone https://github.com/your-username/GCP_Start.git
+cd GCP_Start
+
+# 2. Edit PROJECT_ID
+nano setup-gcp.sh
+
+# 3. Run
+bash setup-gcp.sh
+
+# 4. Download the key file to your local machine
+cloudshell download sa-key.json
+```
+
+</details>
+
+<details>
+<summary>Using a local terminal</summary>
+
+```bash
+# Requires gcloud CLI installed and authenticated:
+# https://cloud.google.com/sdk/docs/install
+gcloud auth login
+
 git clone https://github.com/your-username/GCP_Start.git
 cd GCP_Start
 
 # Edit PROJECT_ID at the top of the script
 nano setup-gcp.sh
 
-# Run (can also run in GCP Cloud Shell)
 bash setup-gcp.sh
 ```
+
+</details>
 
 This produces `sa-key.json` and prints the service account email. **Keep this file safe — it is git-ignored and must never be committed.**
 

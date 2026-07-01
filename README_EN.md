@@ -1,337 +1,323 @@
-<p align="center">
-  <h1 align="center">GCP Spot Watchdog</h1>
-  <p align="center">
-    Automatically monitor GCP Spot (preemptible) instances and restart them via API when preempted, with optional Telegram notifications.
-    <br />
-    <a href="./README.md"><strong>中文</strong></a>
-    &nbsp;&middot;&nbsp;
-    <a href="#quick-start">Quick Start</a>
-    &nbsp;&middot;&nbsp;
-    <a href="#variant-comparison">Variant Comparison</a>
-    &nbsp;&middot;&nbsp;
-    <a href="#telegram-notifications">Telegram Notifications</a>
-  </p>
-</p>
+# GCP Spot Watchdog
+
+> Automatically monitor GCP Spot instances and restart them when preempted, with optional Telegram notifications.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![GCP](https://img.shields.io/badge/Google%20Cloud-Compute%20Engine-4285F4?logo=googlecloud&logoColor=white)](#)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](#)
+
+[中文文档](README.md)
 
 ---
 
-## What It Does
+## Why?
 
-GCP Spot instances can be preempted at any time (status becomes `TERMINATED`). This project provides a **watchdog** that runs every 5 minutes to:
+GCP **Spot (preemptible) instances** offer 60-91% discounts over on-demand pricing, but can be reclaimed by Google at any time — your VM gets `TERMINATED` with little notice. For fault-tolerant workloads, Spot is a great deal — as long as you can **automatically restart** instances after preemption.
 
-1. **HTTPS-probe** each instance — any HTTP response (200 / 404 / 500) counts as alive
-2. On probe failure, **query the GCP instance status** — only `TERMINATED` / `STOPPED` triggers a restart
-3. Call the **`instances.start` API** to auto-restart and push a **Telegram Bot** notification
+**GCP Spot Watchdog** is that auto-restarter.
 
-> **Why not restart on probe failure alone?**
-> Using the GCP API status as a gate prevents duplicate start calls on instances that are still booting (`STAGING`), and distinguishes "preempted" from "VM is running but the app crashed."
+## How It Works
 
-## Variant Comparison
+```
+Every 5 minutes
+    │
+    ▼
+┌─────────────────┐     200/404/5xx      ┌───────────┐
+│  HTTPS probe /  │ ── got response ───▶ │  Online ✓ │
+│  (timeout 10s)  │                       └───────────┘
+└────────┬────────┘
+         │ Connection refused / timeout / TLS failure
+         ▼
+┌─────────────────┐
+│ Query GCP API   │
+│ instances.get   │
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+TERMINATED  RUNNING/STAGING
+ /STOPPED    /PROVISIONING
+    │              │
+    ▼              ▼
+ Start ▶ TG     Skip (booting
+instances.start  or app-level issue)
+```
 
-Two **independent** variants are provided — pick whichever fits your setup:
+**Key design**: we don't blindly restart on probe failure. The GCP instance status acts as a **gate** — `instances.start` is only called when the instance is confirmed `TERMINATED`/`STOPPED`. This prevents duplicate start calls on booting instances and distinguishes "preempted" from "VM is running but the app crashed."
 
-| | Variant A: Debian watchdog | Variant B: Cloudflare Worker |
+## Two Deployment Options
+
+Two **fully independent** options — pick whichever fits your setup:
+
+| | Option A: Debian Watchdog | Option B: Cloudflare Worker |
 |:--|:--|:--|
-| **Directory** | [`spot-watchdog/`](./spot-watchdog/) | [`spot-watchdog-worker/`](./spot-watchdog-worker/) |
 | **Runtime** | An always-on Linux machine | Cloudflare serverless |
-| **Scheduler** | systemd timer | Cron Trigger |
-| **Probing** | `curl` | `fetch()` |
-| **Auth** | `gcloud` CLI service account activation | JS Web Crypto RS256 JWT → OAuth token |
-| **Dependencies** | `bash` `curl` `gcloud` | Node.js + `wrangler` |
+| **Stack** | Bash + gcloud CLI + systemd timer | JavaScript + Cron Trigger |
+| **Probe** | `curl` | `fetch()` |
+| **GCP Auth** | `gcloud` service account activation | RS256 JWT → OAuth token in JS |
 | **Requires always-on machine** | Yes | **No** |
-| **Best for** | Already have a stable VPS / home server | Zero-ops, no extra machine |
-
-## Prerequisites
-
-- A GCP project with one or more Spot instances
-- Each monitored instance has a **publicly reachable HTTPS endpoint** (e.g., `https://your-ip/`)
-- [`gcloud` CLI](https://cloud.google.com/sdk/docs/install) installed and authenticated with IAM admin permissions
+| **Best for** | Existing server / internal probing | Zero-maintenance / free tier |
 
 ## Quick Start
 
-### Step 0: Clone the Repo
+### Prerequisites
+
+- A GCP project with Spot instances running
+- Monitored instances must have a **publicly reachable HTTPS service** (firewall rule allowing the port)
+- [gcloud CLI](https://cloud.google.com/sdk/docs/install) installed and authenticated with IAM admin permissions
+
+### Step 1: GCP Service Account Setup (shared by both options)
+
+`setup-gcp.sh` creates a least-privilege service account (only `compute.instances.get` / `start` / `list`) and downloads the key file.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/GCP_Start.git
+git clone https://github.com/your-username/GCP_Start.git
 cd GCP_Start
-```
 
-### Step 1: Create a GCP Service Account (shared, one-time)
+# Edit PROJECT_ID at the top of the script
+nano setup-gcp.sh
 
-Edit `PROJECT_ID` at the top of [`setup-gcp.sh`](./setup-gcp.sh), then run:
-
-```bash
+# Run (can also run in GCP Cloud Shell)
 bash setup-gcp.sh
 ```
 
-This will:
-- Create service account `spot-watchdog@PROJECT_ID.iam.gserviceaccount.com`
-- Create a least-privilege custom role (`compute.instances.get` / `.start` / `.list` only)
-- Bind the role to the service account
-- Download the key file `sa-key.json` (excluded by `.gitignore` — never commit this)
+This produces `sa-key.json` and prints the service account email. **Keep this file safe — it is git-ignored and must never be committed.**
 
-### Step 2: Deploy One Variant
+---
 
-<details>
-<summary><b>Variant A: Debian watchdog (bash + gcloud + systemd timer)</b></summary>
+### Step 2 (Option A): Debian Watchdog
 
-#### Install Dependencies
+> For when you already have an always-on Debian/Ubuntu machine.
+
+#### 2A-1. Install dependencies
 
 ```bash
-# Debian / Ubuntu
 sudo apt-get update && sudo apt-get install -y curl
-# Install gcloud CLI per the official docs:
+
+# Install gcloud CLI per official docs:
 # https://cloud.google.com/sdk/docs/install#deb
 ```
 
-#### Configure Target Instances
+#### 2A-2. Configure target instances
 
-Edit `spot-watchdog/targets.conf` — one instance per line (space-separated):
+Edit `spot-watchdog/targets.conf` — one instance per line:
 
-```
+```conf
 # project            zone              instance      health_url
 my-project           us-central1-a     web-1         https://web1.example.com/
 my-project           asia-east1-b      worker-1      https://worker1.example.com/
 ```
 
-#### Deploy
+> The health URL is considered "alive" if it returns **any HTTP response** (200, 404, 500 all count). Only connection failure/timeout/TLS errors are treated as "down."
+
+#### 2A-3. Install to system
 
 ```bash
 sudo mkdir -p /opt/spot-watchdog
 sudo cp spot-watchdog/watchdog.sh spot-watchdog/targets.conf sa-key.json /opt/spot-watchdog/
 sudo chmod 600 /opt/spot-watchdog/sa-key.json
 sudo chmod +x /opt/spot-watchdog/watchdog.sh
-
 sudo cp spot-watchdog/spot-watchdog.service spot-watchdog/spot-watchdog.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now spot-watchdog.timer
 ```
 
-#### Verify
+#### 2A-4. (Optional) Enable Telegram notifications
+
+Edit `/etc/systemd/system/spot-watchdog.service`, uncomment and fill in:
+
+```ini
+Environment=TG_BOT_TOKEN=your_bot_token
+Environment=TG_CHAT_ID=your_chat_id
+```
+
+Then reload:
 
 ```bash
-# Create a TERMINATED state for testing
-gcloud compute instances stop TEST_INSTANCE --zone=ZONE
+sudo systemctl daemon-reload
+```
 
-# Trigger the watchdog manually
+#### 2A-5. Verify
+
+```bash
+# Trigger manually
 sudo systemctl start spot-watchdog.service
 
-# Check logs
+# Watch logs
 journalctl -u spot-watchdog.service -f
+
+# Check next scheduled run
+systemctl list-timers spot-watchdog.timer
 ```
 
-#### Operations
-
-```bash
-systemctl list-timers spot-watchdog.timer   # Next trigger time
-systemctl start spot-watchdog.service       # Trigger manually
-journalctl -u spot-watchdog.service -n 50   # Last 50 log lines
-```
-
-#### Environment Variables
+<details>
+<summary>Environment variables</summary>
 
 | Variable | Default | Description |
 |:--|:--|:--|
-| `GCP_SA_KEY` | `<script_dir>/sa-key.json` | Path to service account key |
-| `WATCHDOG_CONF` | `<script_dir>/targets.conf` | Path to target list |
-| `PROBE_TIMEOUT` | `10` | HTTP probe timeout in seconds |
+| `GCP_SA_KEY` | `<script-dir>/sa-key.json` | Path to service account key |
+| `WATCHDOG_CONF` | `<script-dir>/targets.conf` | Path to target list |
+| `PROBE_TIMEOUT` | `10` | HTTP probe timeout (seconds) |
 | `TG_BOT_TOKEN` | — | Telegram bot token |
-| `TG_CHAT_ID` | — | Telegram chat ID |
+| `TG_CHAT_ID` | — | Telegram chat id |
 
 </details>
 
-<details>
-<summary><b>Variant B: Cloudflare Worker + Cron Trigger (serverless)</b></summary>
+---
 
-#### Install Dependencies
+### Step 2 (Option B): Cloudflare Worker
+
+> No always-on machine needed. Covered by the free tier.
+
+#### 2B-1. Install dependencies and log in
 
 ```bash
 cd spot-watchdog-worker
 npm install
-npx wrangler login
+npx wrangler login    # Opens Cloudflare auth page in browser
 ```
 
-#### Configure Target Instances
+#### 2B-2. Configure target instances
 
-Edit the `TARGETS` var in `wrangler.toml` (JSON array):
+Edit `TARGETS` in `wrangler.toml`:
 
 ```toml
-[vars]
 TARGETS = '''[
   {"project":"my-project","zone":"us-central1-a","instance":"web-1","healthUrl":"https://web1.example.com/"},
   {"project":"my-project","zone":"asia-east1-b","instance":"worker-1","healthUrl":"https://worker1.example.com/"}
 ]'''
 ```
 
-#### Set Secrets
+#### 2B-3. Set secrets
 
 ```bash
-# Service account email
+# Service account email (printed by setup-gcp.sh)
 npx wrangler secret put GCP_SA_EMAIL
-# Enter: spot-watchdog@my-project.iam.gserviceaccount.com
 
-# Service account private key (from sa-key.json's private_key field)
+# Private key from sa-key.json
 npx wrangler secret put GCP_SA_PRIVATE_KEY
 ```
 
-> **Extract private_key (bash / jq):**
-> ```bash
-> jq -r '.private_key' sa-key.json
-> ```
-> **Extract private_key (PowerShell):**
-> ```powershell
-> (Get-Content sa-key.json | ConvertFrom-Json).private_key
-> ```
+> **PowerShell**: `(Get-Content sa-key.json | ConvertFrom-Json).private_key`
+>
+> **Bash/Linux**: `jq -r .private_key sa-key.json`
 
-#### Deploy
-
-```bash
-npx wrangler deploy
-```
-
-#### Verify
-
-```bash
-# Local dev mode
-npx wrangler dev
-
-# In another terminal — trigger one round
-curl http://localhost:8787/run
-
-# Stop a test instance, then trigger
-gcloud compute instances stop TEST_INSTANCE --zone=ZONE
-curl http://localhost:8787/run
-# Expected: DOWN ... -> START ... status=TERMINATED -> starting
-```
-
-#### Operations
-
-```bash
-npx wrangler tail             # Live production logs
-npx wrangler deploy           # Redeploy
-```
-
-You can also trigger the cron manually from **Cloudflare Dashboard → Workers → spot-watchdog → Triggers**.
-
-#### Environment Variables
-
-| Name | Type | Description |
-|:--|:--|:--|
-| `TARGETS` | var | Target instances JSON array |
-| `PROBE_TIMEOUT_MS` | var | Probe timeout in ms (default `10000`) |
-| `GCP_SA_EMAIL` | secret | Service account email |
-| `GCP_SA_PRIVATE_KEY` | secret | Service account private key (PEM) |
-| `TG_BOT_TOKEN` | secret | Telegram bot token |
-| `TG_CHAT_ID` | secret | Telegram chat ID |
-
-</details>
-
-### Step 3: Set Up Telegram Notifications (Optional)
-
-Both variants support Telegram Bot notifications on instance restart. Example message:
-
-```
-🔴→🟢 Spot 实例已自动开机
-实例: web-1
-项目: my-project
-区域: us-central1-a
-之前状态: TERMINATED
-时间: 2026-07-01T12:00:00+08:00
-```
-
-#### Get Your Bot Token and Chat ID
-
-1. Find **@BotFather** on Telegram → send `/newbot` → follow prompts to get a **Bot Token**
-2. Send any message to your new bot
-3. Visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` and read `result[0].message.chat.id`
-   (or use **@userinfobot** on Telegram to get your Chat ID directly)
-
-#### Configure
-
-**Variant A (Debian):** Edit `/etc/systemd/system/spot-watchdog.service` — uncomment and fill in:
-
-```ini
-Environment=TG_BOT_TOKEN=123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-Environment=TG_CHAT_ID=987654321
-```
-
-```bash
-sudo systemctl daemon-reload
-```
-
-**Variant B (Worker):**
+#### 2B-4. (Optional) Enable Telegram notifications
 
 ```bash
 npx wrangler secret put TG_BOT_TOKEN
 npx wrangler secret put TG_CHAT_ID
+```
+
+#### 2B-5. Deploy
+
+```bash
 npx wrangler deploy
 ```
 
-If not configured, notifications are silently skipped — the watchdog runs normally either way.
+The Cron Trigger runs automatically every 5 minutes.
 
-## How It Works
+#### 2B-6. Verify
 
-```
-Every 5 minutes
-     │
-     ▼
-┌──────────────┐     Connection OK    ┌────────┐
-│ HTTPS probe  │ ───────────────────▶ │  Alive │
-│ GET /        │   (any HTTP status)  │  Skip  │
-└──────────────┘                      └────────┘
-     │ Connection refused / timeout / TLS error
-     ▼
-┌──────────────┐
-│  Query GCP   │
-│  API status  │
-└──────────────┘
-     │
-     ├── TERMINATED / STOPPED ──▶  Call instances.start ──▶ Telegram notification
-     │
-     └── RUNNING / STAGING ────▶  Skip (booting or app-level issue)
+```bash
+# Local dev testing
+npx wrangler dev
+# Trigger a round from another terminal
+curl http://localhost:8787/run
+
+# Watch production logs
+npx wrangler tail
 ```
 
-## Adjusting Probe Frequency
+<details>
+<summary>Environment variables / Secrets</summary>
 
-Default: every **5 minutes**. To change:
+| Name | Type | Description |
+|:--|:--|:--|
+| `TARGETS` | var | JSON array of target instances |
+| `PROBE_TIMEOUT_MS` | var | HTTP probe timeout in ms (default 10000) |
+| `GCP_SA_EMAIL` | secret | Service account email |
+| `GCP_SA_PRIVATE_KEY` | secret | Service account private key (PEM) |
+| `TG_BOT_TOKEN` | secret | Telegram bot token (optional) |
+| `TG_CHAT_ID` | secret | Telegram chat id (optional) |
 
-- **Variant A:** Edit `OnUnitActiveSec=5min` in `spot-watchdog.timer`, then:
-  ```bash
-  sudo systemctl daemon-reload && sudo systemctl restart spot-watchdog.timer
-  ```
-- **Variant B:** Edit `crons = ["*/5 * * * *"]` in `wrangler.toml`, then `npx wrangler deploy`
+</details>
 
-## Security Notes
+---
 
-- `sa-key.json` is excluded by `.gitignore` — **never commit it**
-- The service account uses a **least-privilege custom role** with only `compute.instances.get` / `.start` / `.list`
-- In the Worker variant, the private key is stored as a Cloudflare **encrypted Secret**
-- `.gitattributes` enforces `eol=lf` to prevent Windows CRLF from breaking shebangs on Linux
+## Telegram Notifications
+
+Both options support optional Telegram push notifications. Once configured, the following events trigger a message:
+
+| Event | Message |
+|:--|:--|
+| Instance auto-started | `🔴→🟢 Spot instance auto-started` + instance/project/zone/time |
+| Instance start failed | `❗ Spot instance start failed` + instance/project/zone/time |
+
+**Getting your Telegram Bot Token and Chat ID**:
+
+1. Search for **@BotFather** on Telegram → send `/newbot` → follow the prompts to get your bot token
+2. Send any message to your new bot
+3. Visit `https://api.telegram.org/bot<your-token>/getUpdates` and find `chat.id` in the response
+4. Or search for **@userinfobot** to get your chat id directly
+
+## End-to-End Testing
+
+Manually stop an instance to verify automatic restart:
+
+```bash
+# 1. Stop a test instance (simulates preemption)
+gcloud compute instances stop TEST_INSTANCE --zone=ZONE
+
+# 2. Trigger a check (or wait up to 5 minutes)
+#    Option A:
+sudo systemctl start spot-watchdog.service
+#    Option B (local):
+curl http://localhost:8787/run
+
+# 3. Expected result:
+#    - Logs show: DOWN → START ... TERMINATED -> starting
+#    - GCP Console: instance goes from TERMINATED → STAGING → RUNNING
+#    - (If configured) Telegram notification received
+```
 
 ## Project Structure
 
 ```
 GCP_Start/
-├── README.md                           # Chinese docs
-├── README_EN.md                        # This file (English)
-├── setup-gcp.sh                        # GCP service account setup (shared)
+├── README.md                            # Chinese documentation
+├── README_EN.md                         # This file
+├── setup-gcp.sh                         # One-time GCP service account setup
 ├── .gitignore
 ├── .gitattributes
 │
-├── spot-watchdog/                      # Variant A: Debian watchdog
-│   ├── watchdog.sh                     #   Main script
-│   ├── targets.conf                    #   Target instance list
-│   ├── spot-watchdog.service           #   systemd oneshot unit
-│   ├── spot-watchdog.timer             #   systemd timer
-│   └── README.md                       #   Variant A details
+├── spot-watchdog/                       # Option A: Debian watchdog
+│   ├── watchdog.sh                      #   Main script
+│   ├── targets.conf                     #   Target instance list
+│   ├── spot-watchdog.service            #   systemd oneshot unit
+│   ├── spot-watchdog.timer              #   systemd timer (every 5 min)
+│   └── README.md
 │
-└── spot-watchdog-worker/               # Variant B: Cloudflare Worker
-    ├── src/index.js                    #   All Worker logic
-    ├── wrangler.toml                   #   Config + Cron Trigger
+└── spot-watchdog-worker/                # Option B: Cloudflare Worker
+    ├── wrangler.toml                    #   Worker config + Cron Trigger
+    ├── src/index.js                     #   All logic (probe/auth/start/notify)
     ├── package.json
-    └── README.md                       #   Variant B details
+    └── README.md
 ```
+
+## Adjusting Probe Interval
+
+The default probe interval is **5 minutes**. To change it:
+
+- **Option A**: Edit `OnUnitActiveSec=5min` in `spot-watchdog.timer`, then `systemctl daemon-reload && systemctl restart spot-watchdog.timer`
+- **Option B**: Edit `crons = ["*/5 * * * *"]` in `wrangler.toml`, then `npx wrangler deploy`
+
+## Security
+
+- `sa-key.json` is in `.gitignore` — **never committed**
+- The service account has least-privilege permissions: only `compute.instances.get` / `start` / `list`
+- Worker secrets are encrypted at rest via Wrangler Secrets — they never appear in code or config files
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -1,0 +1,19 @@
+name = "spot-watchdog"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# 每 5 分钟触发一次
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+# 目标实例清单（非敏感）。替换为你自己的实例。
+TARGETS = '''[
+  {"project":"my-project","zone":"us-central1-a","instance":"web-1","healthUrl":"https://1.2.3.4/healthz"}
+]'''
+# HTTP 探测超时（毫秒），可选
+PROBE_TIMEOUT_MS = "10000"
+
+# 敏感信息用 secret，不要写在这里：
+#   npx wrangler secret put GCP_SA_EMAIL
+#   npx wrangler secret put GCP_SA_PRIVATE_KEY

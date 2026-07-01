@@ -1,0 +1,14 @@
+{
+  "name": "spot-watchdog-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GCP Spot instance watchdog on Cloudflare Workers (Cron Trigger)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

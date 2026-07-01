@@ -1,0 +1,10 @@
+# 绝不提交服务账号密钥
+sa-key.json
+*sa-key*.json
+*.pem
+
+# Node / Wrangler
+node_modules/
+.wrangler/
+.dev.vars
+npm-debug.log*

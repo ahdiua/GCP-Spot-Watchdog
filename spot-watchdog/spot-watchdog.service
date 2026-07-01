@@ -1,0 +1,14 @@
+[Unit]
+Description=GCP Spot instance watchdog (probe & auto-start)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=GCP_SA_KEY=/opt/spot-watchdog/sa-key.json
+Environment=WATCHDOG_CONF=/opt/spot-watchdog/targets.conf
+# 可选：Telegram 通知（取消注释并填入后即启用）
+#Environment=TG_BOT_TOKEN=123456789:AA...your-bot-token
+#Environment=TG_CHAT_ID=123456789
+# flock 防止上一轮未结束时并发执行
+ExecStart=/usr/bin/flock -n /run/spot-watchdog.lock /opt/spot-watchdog/watchdog.sh
